@@ -32,16 +32,5 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install uv (Unix)
-        if: runner.os != 'Windows'
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
-
-      - name: Install uv (Windows)
-        if: runner.os == 'Windows'
-        run: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-
-      - name: Install package
-        run: uv pip install --system "pyneapples[dev] @ ."
-
       - name: Test package
         run: pytest
