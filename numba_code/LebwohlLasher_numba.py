@@ -22,21 +22,17 @@ domains alternate between old data and new data.
 SH 16-Oct-23
 """
 
-cimport cython
 import sys
 import time
 import datetime
 import numpy as np
-cimport numpy as np
-ctypedef np.float64_t dtype_t
 import matplotlib.pyplot as plt
 import matplotlib as mpl
-from libc.math cimport cos
+from numba import jit
 
 #=======================================================================
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef double[:,::1] initdat(int nmax):
+@jit(nopython=True)
+def initdat(nmax):
     """
     Arguments:
       nmax (int) = size of lattice to create (nmax,nmax).
@@ -47,7 +43,6 @@ cdef double[:,::1] initdat(int nmax):
 	Returns:
 	  arr (float(nmax,nmax)) = array to hold lattice.
     """
-    cdef double[:,::1] arr = np.zeros((nmax,nmax),dtype=np.double)
     arr = np.random.random_sample((nmax,nmax))*2.0*np.pi
     return arr
 #=======================================================================
@@ -135,9 +130,9 @@ def savedat(arr,nsteps,Ts,runtime,ratio,energy,order,nmax):
         print("   {:05d}    {:6.4f} {:12.4f}  {:6.4f} ".format(i,ratio[i],energy[i],order[i]),file=FileOut)
     FileOut.close()
 #=======================================================================
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef double one_energy(double[:,::1] arr, int ix, int iy, int nmax):
+
+@jit(nopython=True)
+def one_energy(arr,ix,iy,nmax):
     """
     Arguments:
 	  arr (float(nmax,nmax)) = array that contains lattice data;
@@ -152,34 +147,27 @@ cdef double one_energy(double[:,::1] arr, int ix, int iy, int nmax):
 	Returns:
 	  en (float) = reduced energy of cell.
     """
-    cdef:
-        double en = 0.0
-        int ixp = (ix+1)%nmax # These are the coordinates
-        int ixm = (ix-1)%nmax # of the neighbours
-        int iyp = (iy+1)%nmax # with wraparound
-        int iym = (iy-1)%nmax #
-        double ang
-
+    en = 0.0
+    ixp = (ix+1)%nmax # These are the coordinates
+    ixm = (ix-1)%nmax # of the neighbours
+    iyp = (iy+1)%nmax # with wraparound
+    iym = (iy-1)%nmax #
 #
 # Add together the 4 neighbour contributions
 # to the energy
-# Pre-compute the cos, this saves repeating that twice, also found that c*c is faster than c**2 on this machine.
 #
     ang = arr[ix,iy]-arr[ixp,iy]
-    c = cos(ang)
-    en += 0.5*(1.0 - 3.0*c*c)
+    en += 0.5*(1.0 - 3.0*np.cos(ang)**2)
     ang = arr[ix,iy]-arr[ixm,iy]
-    c = cos(ang)
-    en += 0.5*(1.0 - 3.0*c*c)
+    en += 0.5*(1.0 - 3.0*np.cos(ang)**2)
     ang = arr[ix,iy]-arr[ix,iyp]
-    c = cos(ang)
-    en += 0.5*(1.0 - 3.0*c*c)
+    en += 0.5*(1.0 - 3.0*np.cos(ang)**2)
     ang = arr[ix,iy]-arr[ix,iym]
-    c = cos(ang)
-    en += 0.5*(1.0 - 3.0*c*c)
-
+    en += 0.5*(1.0 - 3.0*np.cos(ang)**2)
     return en
 #=======================================================================
+
+@jit(nopython=True)
 def all_energy(arr,nmax):
     """
     Arguments:
@@ -225,10 +213,7 @@ def get_order(arr,nmax):
     eigenvalues,eigenvectors = np.linalg.eig(Qab)
     return eigenvalues.max()
 #=======================================================================
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-def MC_step(double[:,::1] arr, float Ts, int nmax):
+def MC_step(arr,Ts,nmax):
     """
     Arguments:
 	  arr (float(nmax,nmax)) = array that contains lattice data;
@@ -249,15 +234,11 @@ def MC_step(double[:,::1] arr, float Ts, int nmax):
     # using lots of individual calls.  "scale" sets the width
     # of the distribution for the angle changes - increases
     # with temperature.
-    cdef:
-        double scale = 0.1+Ts
-        int accept = 0
-        Py_ssize_t i, j
-
-    cdef int[:,::1] xran = np.random.randint(0,high=nmax, size=(nmax,nmax), dtype=np.int32)
-    cdef int[:,::1] yran = np.random.randint(0,high=nmax, size=(nmax,nmax), dtype=np.int32)
-    cdef double[:,::1] aran = np.random.normal(scale=scale, size=(nmax,nmax))
-
+    scale=0.1+Ts
+    accept = 0
+    xran = np.random.randint(0,high=nmax, size=(nmax,nmax))
+    yran = np.random.randint(0,high=nmax, size=(nmax,nmax))
+    aran = np.random.normal(scale=scale, size=(nmax,nmax))
     for i in range(nmax):
         for j in range(nmax):
             ix = xran[i,j]
@@ -279,7 +260,7 @@ def MC_step(double[:,::1] arr, float Ts, int nmax):
                     arr[ix,iy] -= ang
     return accept/(nmax*nmax)
 #=======================================================================
-def main(program, int nsteps, int nmax, float temp, int pflag):
+def main(program, nsteps, nmax, temp, pflag):
     """
     Arguments:
 	  program (string) = the name of the program;
@@ -293,20 +274,17 @@ def main(program, int nsteps, int nmax, float temp, int pflag):
       NULL
     """
     # Create and initialise lattice
-    cdef double[:,::1] lattice = initdat(nmax)
+    lattice = initdat(nmax)
     # Plot initial frame of lattice
     plotdat(lattice,pflag,nmax)
     # Create arrays to store energy, acceptance ratio and order parameter
-    cdef double[::1] energy = np.zeros(nsteps+1,dtype=np.double)
-    cdef double[::1] ratio = np.zeros(nsteps+1,dtype=np.double)
-    cdef double[::1] order = np.zeros(nsteps+1,dtype=np.double)
+    energy = np.zeros(nsteps+1,dtype=np.dtype)
+    ratio = np.zeros(nsteps+1,dtype=np.dtype)
+    order = np.zeros(nsteps+1,dtype=np.dtype)
     # Set initial values in arrays
     energy[0] = all_energy(lattice,nmax)
     ratio[0] = 0.5 # ideal value
     order[0] = get_order(lattice,nmax)
-
-    cdef:
-        int it
 
     # Begin doing and timing some MC steps.
     initial = time.time()
