@@ -140,7 +140,7 @@ def savedat(arr,nsteps,Ts,runtime,ratio,energy,order,nmax):
 cdef double one_energy(double[:,::1] arr, int ix, int iy, int nmax):
     """
     Arguments:
-	  arr (float(nmax,nmax)) = array that contains lattice data;
+	  arr (double(nmax,nmax)) = array that contains lattice data;
 	  ix (int) = x lattice coordinate of cell;
 	  iy (int) = y lattice coordinate of cell;
       nmax (int) = side length of square lattice.
@@ -150,7 +150,7 @@ cdef double one_energy(double[:,::1] arr, int ix, int iy, int nmax):
       reduced energy (U/epsilon), equivalent to setting epsilon=1 in
       equation (1) in the project notes.
 	Returns:
-	  en (float) = reduced energy of cell.
+	  en (double) = reduced energy of cell.
     """
     cdef:
         double en = 0.0
@@ -180,7 +180,9 @@ cdef double one_energy(double[:,::1] arr, int ix, int iy, int nmax):
 
     return en
 #=======================================================================
-def all_energy(arr,nmax):
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def all_energy(double[:,::1] arr, int nmax):
     """
     Arguments:
 	  arr (float(nmax,nmax)) = array that contains lattice data;
@@ -191,13 +193,18 @@ def all_energy(arr,nmax):
 	Returns:
 	  enall (float) = reduced energy of lattice.
     """
-    enall = 0.0
+    cdef:
+        int i, j
+        double enall
+
     for i in range(nmax):
         for j in range(nmax):
             enall += one_energy(arr,i,j,nmax)
     return enall
 #=======================================================================
-def get_order(arr,nmax):
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def get_order(double[:,::1] arr, int nmax):
     """
     Arguments:
 	  arr (float(nmax,nmax)) = array that contains lattice data;
@@ -210,12 +217,16 @@ def get_order(arr,nmax):
 	  max(eigenvalues(Qab)) (float) = order parameter for lattice.
     """
     Qab = np.zeros((3,3))
-    delta = np.eye(3,3)
+    cdef double[:,::1] delta = np.eye(3,3)
     #
     # Generate a 3D unit vector for each cell (i,j) and
     # put it in a (3,i,j) array.
     #
-    lab = np.vstack((np.cos(arr),np.sin(arr),np.zeros_like(arr))).reshape(3,nmax,nmax)
+    cdef double[:,:,::1] lab = np.vstack((np.cos(arr),np.sin(arr),np.zeros_like(arr))).reshape(3,nmax,nmax)
+
+    cdef:
+        int i, j, a, b
+
     for a in range(3):
         for b in range(3):
             for i in range(nmax):
@@ -253,10 +264,15 @@ def MC_step(double[:,::1] arr, float Ts, int nmax):
         double scale = 0.1+Ts
         int accept = 0
         Py_ssize_t i, j
+        int ix, iy
+        double ang, en0, en1, boltz
 
     cdef int[:,::1] xran = np.random.randint(0,high=nmax, size=(nmax,nmax), dtype=np.int32)
     cdef int[:,::1] yran = np.random.randint(0,high=nmax, size=(nmax,nmax), dtype=np.int32)
     cdef double[:,::1] aran = np.random.normal(scale=scale, size=(nmax,nmax))
+
+    # Pre-compute random numbers, before loop.
+    cdef double[:,::1] random_num_array = np.random.uniform(0.0, 1.0, size=(nmax, nmax))
 
     for i in range(nmax):
         for j in range(nmax):
@@ -273,7 +289,8 @@ def MC_step(double[:,::1] arr, float Ts, int nmax):
             # exp( -(E_new - E_old) / T* ) >= rand(0,1)
                 boltz = np.exp( -(en1 - en0) / Ts )
 
-                if boltz >= np.random.uniform(0.0,1.0):
+                # Use pre-computed random numbers.
+                if boltz >= random_num_array[i,j]:
                     accept += 1
                 else:
                     arr[ix,iy] -= ang

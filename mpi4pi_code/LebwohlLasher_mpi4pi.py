@@ -272,33 +272,57 @@ def main(program, nsteps, nmax, temp, pflag):
     Returns:
       NULL
     """
-    # Create and initialise lattice
-    lattice = initdat(nmax)
-    # Plot initial frame of lattice
-    plotdat(lattice,pflag,nmax)
-    # Create arrays to store energy, acceptance ratio and order parameter
-    energy = np.zeros(nsteps+1,dtype=np.dtype)
-    ratio = np.zeros(nsteps+1,dtype=np.dtype)
-    order = np.zeros(nsteps+1,dtype=np.dtype)
-    # Set initial values in arrays
-    energy[0] = all_energy(lattice,nmax)
-    ratio[0] = 0.5 # ideal value
-    order[0] = get_order(lattice,nmax)
 
-    # Begin doing and timing some MC steps.
-    initial = time.time()
-    for it in range(1,nsteps+1):
-        ratio[it] = MC_step(lattice,temp,nmax)
-        energy[it] = all_energy(lattice,nmax)
-        order[it] = get_order(lattice,nmax)
-    final = time.time()
-    runtime = final-initial
-    
-    # Final outputs
-    print("{}: Size: {:d}, Steps: {:d}, T*: {:5.3f}: Order: {:5.3f}, Time: {:8.6f} s".format(program, nmax,nsteps,temp,order[nsteps-1],runtime))
-    # Plot final frame of lattice and generate output file
-    savedat(lattice,nsteps,temp,runtime,ratio,energy,order,nmax)
-    plotdat(lattice,pflag,nmax)
+    # Locate taskid and task count
+    comm = MPI.COMM_WORLD
+
+    # Initalisations for MPI
+    taskid = comm.Get_rank()
+    numtasks = comm.Get_size()
+    numworkers = numtasks - 1
+
+    # Define the master task
+    MASTER = 0
+
+    # ************************* master code *******************************/
+    if taskid == MASTER:
+        # Check if numworkers is within range - quit if not
+        if (numworkers > 7) or (numworkers < 1):
+            print("ERROR: the number of workers must be between %d and %d." % (1, 7))
+            comm.Abort()
+
+        # Create and initialise lattice
+        lattice = initdat(nmax)
+        # Plot initial frame of lattice
+        plotdat(lattice,pflag,nmax)
+        # Create arrays to store energy, acceptance ratio and order parameter
+        energy = np.zeros(nsteps+1,dtype=np.dtype)
+        ratio = np.zeros(nsteps+1,dtype=np.dtype)
+        order = np.zeros(nsteps+1,dtype=np.dtype)
+        # Set initial values in arrays
+        energy[0] = all_energy(lattice,nmax)
+        ratio[0] = 0.5 # ideal value
+        order[0] = get_order(lattice,nmax)
+
+        # Begin doing and timing some MC steps.
+        initial = MPI.Wtime()
+        for it in range(1,nsteps+1):
+            ratio[it] = MC_step(lattice,temp,nmax)
+            energy[it] = all_energy(lattice,nmax)
+            order[it] = get_order(lattice,nmax)
+        final = MPI.Wtime()
+        runtime = final-initial
+
+        # Final outputs
+        print("{}: Size: {:d}, Steps: {:d}, T*: {:5.3f}: Order: {:5.3f}, Time: {:8.6f} s".format(program, nmax,nsteps,temp,order[nsteps-1],runtime))
+        # Plot final frame of lattice and generate output file
+        savedat(lattice,nsteps,temp,runtime,ratio,energy,order,nmax)
+        plotdat(lattice,pflag,nmax)
+
+    elif taskid != MASTER:
+        
+        # Only start the other tasks after they have recieved their
+
 #=======================================================================
 # Main part of program, getting command line arguments and calling
 # main simulation function.
