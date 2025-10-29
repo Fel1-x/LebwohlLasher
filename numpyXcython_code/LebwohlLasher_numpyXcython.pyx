@@ -136,7 +136,7 @@ def savedat(arr,nsteps,Ts,runtime,ratio,energy,order,nmax):
 #=======================================================================
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef double[::1] one_energy(double[:,::1] arr_c, int i, int nmax):
+cdef one_energy(double[:,::1] arr_c, int i, int nmax, int odd_even_flag=3, int extra=0):
     """
     Arguments:
 	  arr (double(nmax,nmax)) = array that contains lattice data;
@@ -152,19 +152,10 @@ cdef double[::1] one_energy(double[:,::1] arr_c, int i, int nmax):
 	  en (double) = reduced energy of cell.
     """
 
-    cdef double[::1] en = np.zeros(nmax)
+    cdef double[::1] en = np.zeros(nmax//2)
 
     arr = np.asarray(arr_c, dtype=np.double)
 
-    arr_right = np.zeros(nmax)
-    arr_left = np.zeros(nmax)
-    arr_up = np.zeros(nmax)
-    arr_down = np.zeros(nmax)
-    target_row = arr[i]
-#
-# Add together the 4 neighbour contributions
-# to the energy
-# Pre-compute the cos, this saves repeating that twice, also found that c*c is faster than c**2 on this machine.
     arr_right = np.roll(arr[i], -1)
     arr_left = np.roll(arr[i], 1)
     arr_up = np.roll(arr, 1, axis=0)[i]
@@ -174,6 +165,7 @@ cdef double[::1] one_energy(double[:,::1] arr_c, int i, int nmax):
 # Add together the 4 neighbour contributions
 # to the energy
 #
+    target_row = arr[i]
     ang_right = target_row-arr_right
     ang_left = target_row-arr_left
     ang_up = target_row-arr_up
@@ -184,6 +176,57 @@ cdef double[::1] one_energy(double[:,::1] arr_c, int i, int nmax):
     en += 0.5*(1.0 - 3.0*np.cos(ang_up)**2)
     en += 0.5*(1.0 - 3.0*np.cos(ang_down)**2)
 
+    if odd_even_flag == 3:
+        return en
+    if extra == 1 and odd_even_flag == 0:
+        return en[::2][:-1]
+    if odd_even_flag == 0:
+        return en[::2]
+    else:
+        return en[1::2]
+#=======================================================================
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef double one_energy_single(double[:,::1] arr, int ix, int iy, int nmax):
+    """
+    Arguments:
+	  arr (double(nmax,nmax)) = array that contains lattice data;
+	  ix (int) = x lattice coordinate of cell;
+	  iy (int) = y lattice coordinate of cell;
+      nmax (int) = side length of square lattice.
+    Description:
+      Function that computes the energy of a single cell of the
+      lattice taking into account periodic boundaries.  Working with
+      reduced energy (U/epsilon), equivalent to setting epsilon=1 in
+      equation (1) in the project notes.
+	Returns:
+	  en (double) = reduced energy of cell.
+    """
+    cdef:
+        double en = 0.0
+        int ixp = (ix+1)%nmax # These are the coordinates
+        int ixm = (ix-1)%nmax # of the neighbours
+        int iyp = (iy+1)%nmax # with wraparound
+        int iym = (iy-1)%nmax #
+        double ang
+
+#
+# Add together the 4 neighbour contributions
+# to the energy
+# Pre-compute the cos, this saves repeating that twice, also found that c*c is faster than c**2 on this machine.
+#
+    ang = arr[ix,iy]-arr[ixp,iy]
+    c = cos(ang)
+    en += 0.5*(1.0 - 3.0*c*c)
+    ang = arr[ix,iy]-arr[ixm,iy]
+    c = cos(ang)
+    en += 0.5*(1.0 - 3.0*c*c)
+    ang = arr[ix,iy]-arr[ix,iyp]
+    c = cos(ang)
+    en += 0.5*(1.0 - 3.0*c*c)
+    ang = arr[ix,iy]-arr[ix,iym]
+    c = cos(ang)
+    en += 0.5*(1.0 - 3.0*c*c)
 
     return en
 #=======================================================================
@@ -272,43 +315,79 @@ def MC_step(double[:,::1] arr_c, float Ts, int nmax):
     cdef:
         double scale = 0.1+Ts
         int accept = 0
-        Py_ssize_t i, j
+        Py_ssize_t i
         int ix, iy
         double boltz
-
-    en0_row = np.zeros(nmax)
-    en1_row = np.zeros(nmax)
-    boltz_row = np.zeros(nmax)
-    random_row = np.zeros(nmax)
-    mask_1 = np.zeros(nmax)
-    mask_2 = np.zeros(nmax)
-    rejections_mask = np.zeros(nmax)
 
     cdef double[:,::1] aran = np.random.normal(scale=scale, size=(nmax,nmax))
     cdef double[::1] ang = np.zeros(nmax)
     # Pre-compute random numbers, before loop.
-    cdef double[:,::1] random_num_array = np.random.uniform(0.0, 1.0, size=(nmax, nmax))
+    cdef double[:,::1] rand_row = np.random.uniform(0.0, 1.0, size=(nmax, nmax))
 
     arr = np.asarray(arr_c, dtype=np.double)
 
+    boltz_row = np.zeros(nmax//2)
+    en1_row_half = np.zeros(nmax//2)
+    en0_row_half = np.zeros(nmax // 2)
+
+    extra = 0
+    if nmax % 2 == 1:
+        extra = 1 # Identify if the amount of rows is divisible by 2, if not, an extra column must be calculated at the end, due to boundary conditions
     for i in range(nmax):
-        ang = aran[i]
-        en0_row = one_energy(arr,i,nmax)
-        arr[i] += ang
-        en1_row = one_energy(arr,i,nmax)
+        for even_odd in [0, 1]: # Repeat the same process as before, but in half row steps, making use of numpy functions for speedup.
+            ang = aran[i]
 
-        en0_row = np.asarray(en0_row)
-        en1_row = np.asarray(en1_row)
+            # Concentrate each half array down for efficient numpy vectorisation.
+            en0_row_half = one_energy(arr,i,nmax,even_odd,extra)
+            arr[i] += ang
+            en1_row_half = one_energy(arr,i,nmax,even_odd,extra)
 
-        boltz_row = np.exp(-(en1_row - en0_row) / Ts)
-        random_row = np.random.uniform(0.0,1.0, size=nmax)
+            en0_row_half = np.asarray(en0_row_half)
+            en1_row_half = np.asarray(en1_row_half)
 
-        mask_1 = (en1_row <= en0_row)
-        mask_2 = (boltz_row >= random_row)
-        accept += np.sum(np.logical_or(mask_1,mask_2))
-        rejections_mask = np.logical_not(mask_1,mask_2)
+            boltz_row = np.exp(-(en1_row_half - en0_row_half) / Ts)
 
-        arr[i] -= ang * rejections_mask
+            if even_odd == 1:
+                random_row = rand_row[i][1::2]
+            elif even_odd == 0 and extra == 0:
+                random_row = rand_row[i][::2]
+            else:
+                random_row = rand_row[i][::2][:-1]
+
+            mask_1 = (en1_row_half <= en0_row_half)
+            mask_2 = (boltz_row >= random_row)
+            accept += np.sum(np.logical_or(mask_1,mask_2))
+            rejections_mask = np.logical_not(mask_1,mask_2)
+
+            # Expand the mask back out to account for the whole arr, but reverse the ang addition for each unchanged column (and extra row)
+            expanded_mask = np.ones(rejections_mask.size * 2, dtype=bool)
+            if even_odd == 0:
+                expanded_mask[::2] = rejections_mask
+            else:
+                expanded_mask[1::2] = rejections_mask
+
+            if extra == 1:
+                expanded_mask = np.append(expanded_mask, True)
+
+            arr[i] -= ang * expanded_mask
+
+    if extra == 1:
+        iy = nmax - 1
+        single_ang = aran[i][iy]
+        en0 = one_energy_single(arr, i, iy, nmax)
+        arr[i, iy] += single_ang
+        en1 = one_energy_single(arr, i, iy, nmax)
+        if en1 <= en0:
+            accept += 1
+        else:
+            # Now apply the Monte Carlo test - compare
+            # exp( -(E_new - E_old) / T* ) >= rand(0,1)
+            boltz = np.exp(-(en1 - en0) / Ts)
+
+            if boltz >= np.random.uniform(0.0, 1.0):
+                accept += 1
+            else:
+                arr[i, iy] -= single_ang
 
     return accept/(nmax*nmax)
 #=======================================================================
