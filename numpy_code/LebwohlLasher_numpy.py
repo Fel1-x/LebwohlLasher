@@ -165,12 +165,12 @@ def one_energy(arr,i,nmax,odd_even_flag=3,extra=0):
 
     if odd_even_flag == 3:
         return en
-    if extra == 1 and odd_even_flag == 0:
-        return en[::2][:-1]
-    if odd_even_flag == 0:
-        return en[::2]
-    else:
+    elif odd_even_flag == 0:
         return en[1::2]
+    elif odd_even_flag == 1 and extra == 1:
+        return en[::2][:-1]
+    else:
+        return en[::2]
 #=======================================================================
 def one_energy_single(arr, ix, iy, nmax):
     """
@@ -276,12 +276,14 @@ def MC_step(arr,Ts,nmax):
     accept = 0
     aran = np.random.normal(scale=scale, size=(nmax,nmax))
     rand_row = np.random.uniform(0.0, 1.0, size=(nmax,nmax))
+
+    row_order = np.random.permutation(nmax)
     # Each odd column will be calculated first, then even columns, this ensures the updates affect the result of those yet to be sampled.
     # Further, boundary conditions may let 2 even columns be next to each other with wraparound, so that is accounted for.
     extra = 0
     if nmax % 2 == 1:
         extra = 1 # Identify if the amount of rows is divisible by 2, if not, an extra column must be calculated at the end, due to boundary conditions
-    for i in range(nmax):
+    for i in row_order:
         for even_odd in [0, 1]: # Repeat the same process as before, but in half row steps, making use of numpy functions for speedup.
             ang = aran[i]
 
@@ -290,12 +292,11 @@ def MC_step(arr,Ts,nmax):
             arr[i] += ang
             en1_row_half = one_energy(arr,i,nmax,even_odd,extra)
 
-
             boltz_row = np.exp(-(en1_row_half - en0_row_half) / Ts)
 
-            if even_odd == 1:
+            if even_odd == 0:
                 random_row = rand_row[i][1::2]
-            elif even_odd == 0 and extra == 0:
+            elif even_odd == 1 and extra == 0:
                 random_row = rand_row[i][::2]
             else:
                 random_row = rand_row[i][::2][:-1]
@@ -303,17 +304,17 @@ def MC_step(arr,Ts,nmax):
             mask_1 = (en1_row_half <= en0_row_half)
             mask_2 = (boltz_row >= random_row)
             accept += np.sum(np.logical_or(mask_1,mask_2))
-            rejections_mask = np.logical_not(mask_1,mask_2)
+            rejections_mask = ~(mask_1 | mask_2)
 
             # Expand the mask back out to account for the whole arr, but reverse the ang addition for each unchanged column (and extra row)
             expanded_mask = np.ones(rejections_mask.size * 2, dtype=bool)
             if even_odd == 0:
-                expanded_mask[::2] = rejections_mask
-            else:
                 expanded_mask[1::2] = rejections_mask
-
+            else:
+                expanded_mask[::2] = rejections_mask
             if extra == 1:
                 expanded_mask = np.append(expanded_mask, True)
+
 
             arr[i] -= ang * expanded_mask
 

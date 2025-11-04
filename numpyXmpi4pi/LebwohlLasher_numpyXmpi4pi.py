@@ -173,12 +173,12 @@ def one_energy(arr,i,nmax,odd_even_flag=3,extra=0):
 
     if odd_even_flag == 3:
         return en
-    if extra == 1 and odd_even_flag == 0:
-        return en[::2][:-1]
-    if odd_even_flag == 0:
-        return en[::2]
-    else:
+    elif odd_even_flag == 0:
         return en[1::2]
+    elif odd_even_flag == 1 and extra == 1:
+        return en[::2][:-1]
+    else:
+        return en[::2]
 #=======================================================================
 def one_energy_single(arr, ix, iy, nmax):
     """
@@ -338,7 +338,7 @@ def half_rowwise_vectorisation(aran, arr, i, nmax, extra,rand_row,accept_local,T
         mask_1 = (en1_row_half <= en0_row_half)
         mask_2 = (boltz_row >= random_row)
         accept_local += np.sum(np.logical_or(mask_1, mask_2))
-        rejections_mask = np.logical_not(mask_1, mask_2)
+        rejections_mask = ~(mask_1 | mask_2)
 
         # Expand the mask back out to account for the whole arr, but reverse the ang addition for each unchanged column (and extra row)
         expanded_mask = np.ones(rejections_mask.size * 2, dtype=bool)

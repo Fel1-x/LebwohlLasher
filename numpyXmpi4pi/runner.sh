@@ -6,7 +6,7 @@ SCRIPT="LebwohlLasher_numpyXmpi4pi.py"
 # Fixed parameters
 TEMP=0.5
 PLOTFLAG=0
-CSV_OUT="results4.csv"
+CSV_OUT="results.csv"
 TASKS=4
 
 # Create or overwrite CSV file with header
@@ -18,20 +18,24 @@ ITERATIONS=($(python3 -c "import numpy as np; print(' '.join(map(str, map(int, n
 # Generate 15 log-spaced values from 1 to 100 for size
 SIZES=($(python3 -c "import numpy as np; print(' '.join(map(str, map(int, np.logspace(0, np.log10(100), 15, base=10).round()))))"))
 
-# Loop over all combinations
-for iter in "${ITERATIONS[@]}"; do
-  for size in "${SIZES[@]}"; do
-    # Run the simulation and capture output
-    OUTPUT=$(mpiexec -n "$TASKS" python "$SCRIPT" "$iter" "$size" "$TEMP" "$PLOTFLAG")
-    
-    # Extract values using regex
-    ORDER=$(echo "$OUTPUT" | ggrep -oP 'Order: \K[0-9.]+')
-    TIME=$(echo "$OUTPUT" | ggrep -oP 'Time: \K[0-9.]+')
-
-    # Append to CSV
-    echo "$iter,$size,$TEMP,$ORDER,$TIME" >> "$CSV_OUT"
-    
-    echo "Logged: iter=$iter, size=$size, order=$ORDER, time=$TIME"
-  done
+# Loop over all sizes when iteration = 500
+for size in "${SIZES[@]}"; do
+  iter=500
+  OUTPUT=$(mpiexec -n "$TASKS" python "$SCRIPT" "$iter" "$size" "$TEMP" "$PLOTFLAG")
+  ORDER=$(echo "$OUTPUT" | ggrep -oP 'Order: \K[0-9.]+')
+  TIME=$(echo "$OUTPUT" | ggrep -oP 'Time: \K[0-9.]+')
+  echo "$iter,$size,$TEMP,$ORDER,$TIME" >> "$CSV_OUT"
+  echo "Logged: iter=$iter, size=$size, order=$ORDER, time=$TIME"
 done
+
+# Loop over all iterations when size = 100
+for iter in "${ITERATIONS[@]}"; do
+  size=100
+  OUTPUT=$(mpiexec -n "$TASKS" python "$SCRIPT" "$iter" "$size" "$TEMP" "$PLOTFLAG")
+  ORDER=$(echo "$OUTPUT" | ggrep -oP 'Order: \K[0-9.]+')
+  TIME=$(echo "$OUTPUT" | ggrep -oP 'Time: \K[0-9.]+')
+  echo "$iter,$size,$TEMP,$ORDER,$TIME" >> "$CSV_OUT"
+  echo "Logged: iter=$iter, size=$size, order=$ORDER, time=$TIME"
+done
+
 

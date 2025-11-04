@@ -35,6 +35,7 @@ import datetime
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
+from numpy.random import default_rng
 
 #=======================================================================
 def initdat(nmax):
@@ -296,31 +297,37 @@ def MC_step(arr,Ts,nmax,taskid,comm,row_start,row_end):
     # with temperature.
     scale=0.1+Ts
     accept_local = 0
-    xran = np.random.randint(0,high=nmax, size=(nmax,nmax))
-    yran = np.random.randint(0,high=nmax, size=(nmax,nmax))
-    aran = np.random.normal(scale=scale, size=(nmax,nmax))
+
+    rng = default_rng(seed=taskid)
+
     if taskid != 0:
-        start = row_start if row_start % 2 == 1 else row_start + 1 # We'll start with even rows, this is because even
-        # row counts may have boundary conditions if the total rows are odd
-        for i in range(start, row_end, 2):
-            for j in range(nmax):
-                ix = xran[i,j]
-                iy = yran[i,j]
-                ang = aran[i,j]
-                en0 = one_energy(arr,ix,iy,nmax)
-                arr[ix,iy] += ang
-                en1 = one_energy(arr,ix,iy,nmax)
-                if en1<=en0:
+        # Define which rows are even, this will be used to determine the pool of random points
+        # That can be chosen from.
+        even_rows = np.arange(row_start, row_end)[np.arange(row_start, row_end) % 2 == 0]
+        num_samples = len(even_rows) * nmax
+
+        xran = np.random.choice(even_rows, size=num_samples)
+        yran = np.random.randint(0, nmax, size=num_samples)
+        aran = np.random.normal(scale=scale, size=num_samples)
+
+        for point in range(num_samples):
+            ix = xran[point]
+            iy = yran[point]
+            ang = aran[point]
+            en0 = one_energy(arr,ix,iy,nmax)
+            arr[ix,iy] += ang
+            en1 = one_energy(arr,ix,iy,nmax)
+            if en1<=en0:
+                accept_local += 1
+            else:
+            # Now apply the Monte Carlo test - compare
+            # exp( -(E_new - E_old) / T* ) >= rand(0,1)
+                boltz = np.exp( -(en1 - en0) / Ts )
+
+                if boltz >= rng.uniform(0.0,1.0):
                     accept_local += 1
                 else:
-                # Now apply the Monte Carlo test - compare
-                # exp( -(E_new - E_old) / T* ) >= rand(0,1)
-                    boltz = np.exp( -(en1 - en0) / Ts )
-
-                    if boltz >= np.random.uniform(0.0,1.0):
-                        accept_local += 1
-                    else:
-                        arr[ix,iy] -= ang
+                    arr[ix,iy] -= ang
 
     # Now we have to synchronise all the arr for future steps.
     local_rows = arr[row_start:row_end].copy()
@@ -329,26 +336,36 @@ def MC_step(arr,Ts,nmax,taskid,comm,row_start,row_end):
         arr[:,:] = np.vstack(gathered)
     comm.Bcast(arr, root=0)
 
-    # Now again for even rows, excluding the last row if nmax is odd
+    # Now again for odd rows, excluding the last row if nmax is odd
     if taskid != 0:
-        end = nmax-1 if nmax % 2 != 0 and row_end == nmax else row_end
-        start = row_start if row_start % 2 == 0 else row_start + 1
-        for i in range(start, end, 2):
-            for j in range(nmax):
-                ix = xran[i,j]
-                iy = yran[i,j]
-                ang = aran[i,j]
-                en0 = one_energy(arr,ix,iy,nmax)
-                arr[ix,iy] += ang
-                en1 = one_energy(arr,ix,iy,nmax)
-                if en1<=en0:
+        odd_rows = np.arange(row_start, row_end)[np.arange(row_start, row_end) % 2 == 1]
+        if nmax % 2 == 1:
+            odd_rows = odd_rows[:-1]
+
+        num_samples = len(odd_rows) * nmax
+
+        xran = np.random.choice(odd_rows, size=num_samples)
+        yran = np.random.randint(0, nmax, size=num_samples)
+        aran = np.random.normal(scale=scale, size=num_samples)
+
+        for point in range(num_samples):
+            ix = xran[point]
+            iy = yran[point]
+            ang = aran[point]
+            en0 = one_energy(arr,ix,iy,nmax)
+            arr[ix,iy] += ang
+            en1 = one_energy(arr,ix,iy,nmax)
+            if en1<=en0:
+                accept_local += 1
+            else:
+            # Now apply the Monte Carlo test - compare
+            # exp( -(E_new - E_old) / T* ) >= rand(0,1)
+                boltz = np.exp( -(en1 - en0) / Ts )
+
+                if boltz >= rng.uniform(0.0,1.0):
                     accept_local += 1
                 else:
-                    boltz = np.exp( -(en1 - en0) / Ts )
-                    if boltz >= np.random.uniform(0.0,1.0):
-                        accept_local += 1
-                    else:
-                        arr[ix,iy] -= ang
+                    arr[ix,iy] -= ang
 
     # Now we have to synchronise all the arr for future steps.
     local_rows = arr[row_start:row_end].copy()
@@ -359,22 +376,27 @@ def MC_step(arr,Ts,nmax,taskid,comm,row_start,row_end):
 
     if nmax % 2 != 0 and row_end == nmax:
         # Change just that last row
-        i = nmax-1
-        for j in range(nmax):
-            ix = xran[i, j]
-            iy = yran[i, j]
-            ang = aran[i, j]
-            en0 = one_energy(arr, ix, iy, nmax)
-            arr[ix, iy] += ang
-            en1 = one_energy(arr, ix, iy, nmax)
-            if en1 <= en0:
+        yran = np.random.randint(0, nmax, size=nmax)
+        aran = np.random.normal(scale=scale, size=nmax)
+
+        for point in range(nmax):
+            ix = row_end-1
+            iy = yran[point]
+            ang = aran[point]
+            en0 = one_energy(arr,ix,iy,nmax)
+            arr[ix,iy] += ang
+            en1 = one_energy(arr,ix,iy,nmax)
+            if en1<=en0:
                 accept_local += 1
             else:
-                boltz = np.exp(-(en1 - en0) / Ts)
-                if boltz >= np.random.uniform(0.0, 1.0):
+            # Now apply the Monte Carlo test - compare
+            # exp( -(E_new - E_old) / T* ) >= rand(0,1)
+                boltz = np.exp( -(en1 - en0) / Ts )
+
+                if boltz >= rng.uniform(0.0,1.0):
                     accept_local += 1
                 else:
-                    arr[ix, iy] -= ang
+                    arr[ix,iy] -= ang
 
     # Now we have to synchronise all the arr for future steps.
     local_rows = arr[row_start:row_end].copy()
@@ -392,7 +414,7 @@ def MC_step(arr,Ts,nmax,taskid,comm,row_start,row_end):
 def split_rows(nrows, numworkers, taskid):
     """
     Divide the rows among the workers
-    Returns (start, rend) for worker.
+    Returns (start, end) for workers.
     """
     worker = taskid-1
     # Integer division and then pick up the remainder.

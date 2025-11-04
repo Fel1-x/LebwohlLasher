@@ -357,7 +357,7 @@ def MC_step(double[:,::1] arr_c, float Ts, int nmax):
             mask_1 = (en1_row_half <= en0_row_half)
             mask_2 = (boltz_row >= random_row)
             accept += np.sum(np.logical_or(mask_1,mask_2))
-            rejections_mask = np.logical_not(mask_1,mask_2)
+            rejections_mask = ~(mask_1 | mask_2)
 
             # Expand the mask back out to account for the whole arr, but reverse the ang addition for each unchanged column (and extra row)
             expanded_mask = np.ones(rejections_mask.size * 2, dtype=bool)
