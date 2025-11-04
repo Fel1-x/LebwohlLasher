@@ -110,6 +110,12 @@ Usage mirrors the respective base methods.
 
 ---
 
+## Data
+
+Data was gathered with bash scripts that ran simulations for multiple input parameters. Data has been processed using the `data_processing.ipynb` script.
+
+---
+
 ## Notes
 - All implementations assume Python 3.
 - Plotting requires `matplotlib`.
