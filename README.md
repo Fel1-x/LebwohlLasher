@@ -41,7 +41,7 @@ python run_LebwohlLasher_cython.py <ITERATIONS> <SIZE> <TEMPERATURE> <PLOTFLAG>
 
 
 ### 4. NumPy
-Vectorized implementation using NumPy arrays for efficient operations.
+Vectorised implementation using NumPy arrays for efficient operations.
 
 ```bash
 python LebwohlLasher_numpy.py <ITERATIONS> <SIZE> <TEMPERATURE> <PLOTFLAG>
