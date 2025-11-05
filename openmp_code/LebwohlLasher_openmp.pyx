@@ -3,9 +3,10 @@ Basic Python Lebwohl-Lasher code.  Based on the paper
 P.A. Lebwohl and G. Lasher, Phys. Rev. A, 6, 426-429 (1972).
 This version in 2D.
 
-Run at the command line by typing:
+Run at the command line with openmp:
 
-python LebwohlLasher.py <ITERATIONS> <SIZE> <TEMPERATURE> <PLOTFLAG>
+CC=gcc-15 python setup_LebwohlLasher_openmp.py build_ext -fi
+python run_LebwohlLasher_openmp.py <ITERATIONS> <SIZE> <TEMPERATURE> <PLOTFLAG> <THREADS>
 
 where:
   ITERATIONS = number of Monte Carlo steps, where 1MCS is when each cell
@@ -13,6 +14,7 @@ where:
   SIZE = side length of square lattice
   TEMPERATURE = reduced temperature in range 0.0 - 2.0.
   PLOTFLAG = 0 for no plot, 1 for energy plot and 2 for angle plot.
+  THREADS = number of threads to be used in parallel
   
 The initial configuration is set at random. The boundaries
 are periodic throughout the simulation.  During the
@@ -38,6 +40,8 @@ from cython.parallel cimport prange
 cimport openmp
 
 #=======================================================================
+# Decorators are used throughout this script to cythonise functions
+# Disable array index bound checking, disable negative indexing.
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef double[:,::1] initdat(int nmax):
@@ -51,6 +55,9 @@ cdef double[:,::1] initdat(int nmax):
 	Returns:
 	  arr (float(nmax,nmax)) = array to hold lattice.
     """
+
+    # Use of memory views instead of numpy arrays for C compilation
+    # All future cythonised code will use C type variable declarations
     cdef double[:,::1] arr = np.zeros((nmax,nmax),dtype=np.double)
     arr = np.random.random_sample((nmax,nmax))*2.0*np.pi
     return arr
@@ -144,17 +151,17 @@ def savedat(arr,nsteps,Ts,runtime,ratio,energy,order,nmax):
 cdef double one_energy(double[:,::1] arr, int ix, int iy, int nmax) nogil:
     """
     Arguments:
-	  arr (float(nmax,nmax)) = array that contains lattice data;
-	  ix (int) = x lattice coordinate of cell;
-	  iy (int) = y lattice coordinate of cell;
+      arr (double(nmax,nmax)) = array that contains lattice data;
+      ix (int) = x lattice coordinate of cell;
+      iy (int) = y lattice coordinate of cell;
       nmax (int) = side length of square lattice.
     Description:
       Function that computes the energy of a single cell of the
       lattice taking into account periodic boundaries.  Working with
       reduced energy (U/epsilon), equivalent to setting epsilon=1 in
       equation (1) in the project notes.
-	Returns:
-	  en (float) = reduced energy of cell.
+    Returns:
+      en (double) = reduced energy of cell.
     """
     cdef:
         double en = 0.0
@@ -191,6 +198,7 @@ def all_energy(double[:,::1] arr, int nmax, int threads):
     Arguments:
 	  arr (float(nmax,nmax)) = array that contains lattice data;
       nmax (int) = side length of square lattice.
+      threads (int) = number of threads for parallelisation
     Description:
       Function to compute the energy of the entire lattice. Output
       is in reduced units (U/epsilon).
@@ -205,10 +213,12 @@ def all_energy(double[:,::1] arr, int nmax, int threads):
 
     cdef double[::1] temp_enall = np.zeros(nmax, dtype=np.double)
 
+    # Use prange to calculate energies in parallel and save each row to a different location in the array temp_enall
     for i in prange(nmax, nogil=True, num_threads=threads):
         for j in range(nmax):
             temp_enall[i] += one_energy(arr,i,j,nmax)
 
+    # Sum the rows out of parallel to avoid race conditions
     for i in range(nmax):
         enall += temp_enall[i]
 
@@ -241,12 +251,14 @@ def get_order(double[:,::1] arr, int nmax, int threads):
     cdef:
         int i, j, a, b
 
+    # Use prange to calculate order in parallel and save each row to a different location in the array temp_Qab
     for i in prange(nmax, nogil=True, num_threads=threads):
         for j in range(nmax):
             for a in range(3):
                 for b in range(3):
                     temp_Qab[i,a,b] += 3*lab[a,i,j]*lab[b,i,j] - delta[a,b]
 
+    # Sum the rows out of parallel to avoid race conditions
     for i in range(nmax):
         Qab += temp_Qab[i]
 
@@ -275,11 +287,7 @@ def MC_step(double[:,::1] arr, float Ts, int nmax, int threads):
 	Returns:
 	  accept/(nmax**2) (float) = acceptance ratio for current MCS.
     """
-    #
-    # Pre-compute some random numbers.  This is faster than
-    # using lots of individual calls.  "scale" sets the width
-    # of the distribution for the angle changes - increases
-    # with temperature.
+    # Declare C type variables
     cdef:
         double scale = 0.1+Ts
         int accept = 0
@@ -287,6 +295,10 @@ def MC_step(double[:,::1] arr, float Ts, int nmax, int threads):
         int ix, iy
         double ang, en0, en1, boltz
 
+    # Pre-compute some random numbers.  This is faster than
+    # using lots of individual calls.  "scale" sets the width
+    # of the distribution for the angle changes - increases
+    # with temperature.
     cdef int[:,::1] xran = np.random.randint(0,high=nmax, size=(nmax,nmax), dtype=np.int32)
     cdef int[:,::1] yran = np.random.randint(0,high=nmax, size=(nmax,nmax), dtype=np.int32)
     cdef double[:,::1] aran = np.random.normal(scale=scale, size=(nmax,nmax))
@@ -294,6 +306,7 @@ def MC_step(double[:,::1] arr, float Ts, int nmax, int threads):
     # Pre-compute random numbers, before loop.
     cdef double[:,::1] random_num_array = np.random.uniform(0.0, 1.0, size=(nmax, nmax))
 
+    # Loop was you would typically but with prange to allow for parallelisation, specifying nogil=True
     for i in prange(nmax, nogil=True, num_threads=threads):
         for j in range(nmax):
             ix = xran[i,j]
@@ -315,7 +328,6 @@ def MC_step(double[:,::1] arr, float Ts, int nmax, int threads):
                 else:
                     arr[ix,iy] -= ang
     return accept/(nmax*nmax)
-    # return 5
 #=======================================================================
 def main(program, int nsteps, int nmax, float temp, int pflag, int num_threads):
     """
@@ -325,7 +337,7 @@ def main(program, int nsteps, int nmax, float temp, int pflag, int num_threads):
       nmax (int) = side length of square lattice to simulate;
 	  temp (float) = reduced temperature (range 0 to 2);
 	  pflag (int) = a flag to control plotting.
-	  threads (int) = number of threads for parallel cython
+	  num_threads (int) = number of threads for parallel cython
     Description:
       This is the main function running the Lebwohl-Lasher simulation.
     Returns:
@@ -347,7 +359,7 @@ def main(program, int nsteps, int nmax, float temp, int pflag, int num_threads):
     cdef:
         int it
 
-    # Begin doing and timing some MC steps.
+    # Begin doing and timing some MC steps with openmp command
     initial = openmp.omp_get_wtime()
     for it in range(1,nsteps+1):
         ratio[it] = MC_step(lattice,temp,nmax,threads=num_threads)

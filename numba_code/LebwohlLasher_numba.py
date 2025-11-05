@@ -1,11 +1,11 @@
 """
-Basic Python Lebwohl-Lasher code.  Based on the paper 
+Numba Python Lebwohl-Lasher code.  Based on the paper
 P.A. Lebwohl and G. Lasher, Phys. Rev. A, 6, 426-429 (1972).
 This version in 2D.
 
 Run at the command line by typing:
 
-python LebwohlLasher.py <ITERATIONS> <SIZE> <TEMPERATURE> <PLOTFLAG>
+python LebwohlLasher_numba.py <ITERATIONS> <SIZE> <TEMPERATURE> <PLOTFLAG>
 
 where:
   ITERATIONS = number of Monte Carlo steps, where 1MCS is when each cell
@@ -31,6 +31,7 @@ import matplotlib as mpl
 from numba import jit
 
 #=======================================================================
+# Using the numba decorator
 @jit(nopython=True)
 def initdat(nmax):
     """
@@ -130,7 +131,7 @@ def savedat(arr,nsteps,Ts,runtime,ratio,energy,order,nmax):
         print("   {:05d}    {:6.4f} {:12.4f}  {:6.4f} ".format(i,ratio[i],energy[i],order[i]),file=FileOut)
     FileOut.close()
 #=======================================================================
-
+# Using the numba decorator
 @jit(nopython=True)
 def one_energy(arr,ix,iy,nmax):
     """
@@ -166,7 +167,7 @@ def one_energy(arr,ix,iy,nmax):
     en += 0.5*(1.0 - 3.0*np.cos(ang)**2)
     return en
 #=======================================================================
-
+# Using the numba decorator
 @jit(nopython=True)
 def all_energy(arr,nmax):
     """

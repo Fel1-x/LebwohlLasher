@@ -1,11 +1,11 @@
 """
-Basic Python Lebwohl-Lasher code.  Based on the paper 
+NumpyXMPI4PY Python Lebwohl-Lasher code.  Based on the paper
 P.A. Lebwohl and G. Lasher, Phys. Rev. A, 6, 426-429 (1972).
 This version in 2D.
 
-Run at the command line by typing:
+Run at the command line with openmpi by typing:
 
-python LebwohlLasher.py <ITERATIONS> <SIZE> <TEMPERATURE> <PLOTFLAG>
+mpiexec -n <TASK_COUNT> python LebwohlLasher_numpyXmpi4py.py <ITERATIONS> <SIZE> <TEMPERATURE> <PLOTFLAG>
 
 where:
   ITERATIONS = number of Monte Carlo steps, where 1MCS is when each cell
@@ -138,19 +138,21 @@ def savedat(arr,nsteps,Ts,runtime,ratio,energy,order,nmax):
 def one_energy(arr,i,nmax,odd_even_flag=3,extra=0):
     """
     Arguments:
-	  arr (float(nmax,nmax)) = array that contains lattice data;
-	  ix (int) = x lattice coordinate of cell;
-	  iy (int) = y lattice coordinate of cell;
-      nmax (int) = side length of square lattice.
+      arr (float(nmax,nmax)) = array that contains lattice data;
+      i (int) = x lattice coordinate row;
+      nmax (int) = side length of square lattice;
+      odd_even_flag (int) = flag of odd vs even columns (1/0);
+      extra (int) = whether nmax is odd;
     Description:
-      Function that computes the energy of a single cell of the
-      lattice taking into account periodic boundaries.  Working with
-      reduced energy (U/epsilon), equivalent to setting epsilon=1 in
-      equation (1) in the project notes.
-	Returns:
-	  en (float) = reduced energy of cell.
+      Function that computes the energy of a row of cells in the lattice
+      and outputs only every other cell such that they can influence
+      neighouring cells. Working with reduced energy (U/epsilon),
+      equivalent to setting epsilon=1 in equation (1) in the project notes.
+    Returns:
+      en (np.array) = reduced energy of a half row of cells.
     """
 
+    # Define arrays to the "left/right/up/down" of the target row position.
     arr_right = np.roll(arr[i], -1)
     arr_left = np.roll(arr[i], 1)
     arr_up = np.roll(arr, 1, axis=0)[i]
@@ -171,6 +173,7 @@ def one_energy(arr,i,nmax,odd_even_flag=3,extra=0):
     en += 0.5*(1.0 - 3.0*np.cos(ang_up)**2)
     en += 0.5*(1.0 - 3.0*np.cos(ang_down)**2)
 
+    # return the half arrays for even cells or odd cells or odd cells-1 if nmax is odd
     if odd_even_flag == 3:
         return en
     elif odd_even_flag == 0:
@@ -284,14 +287,18 @@ def get_order(arr,nmax):
 def get_order_MPI(arr,nmax,taskid,comm,row_start,row_end):
     """
     Arguments:
-	  arr (float(nmax,nmax)) = array that contains lattice data;
+      arr (float(nmax,nmax)) = array that contains lattice data;
       nmax (int) = side length of square lattice.
+      taskid (int) = task id of the MPI process.
+      comm (MPI.COMM_WORLD) = MPI communicator object.
+      row_start (int) = row start index of the MPI process.
+      row_end (int) = row end index of the MPI process.
     Description:
       Function to calculate the order parameter of a lattice
       using the Q tensor approach, as in equation (3) of the
       project notes.  Function returns S_lattice = max(eigenvalues(Q_ab)).
-	Returns:
-	  max(eigenvalues(Qab)) (float) = order parameter for lattice.
+    Returns:
+      max(eigenvalues(Qab)) (float) = order parameter for lattice.
     """
     Qab_local = np.zeros((3,3))
     delta = np.eye(3,3)
@@ -301,6 +308,7 @@ def get_order_MPI(arr,nmax,taskid,comm,row_start,row_end):
     #
     lab = np.vstack((np.cos(arr),np.sin(arr),np.zeros_like(arr))).reshape(3,nmax,nmax)
 
+    # Calculate the order for individual MPI tasks
     if taskid > 0:
         for a in range(3):
             for b in range(3):
@@ -310,6 +318,7 @@ def get_order_MPI(arr,nmax,taskid,comm,row_start,row_end):
 
     Qab = comm.reduce(Qab_local, op=MPI.SUM, root=0)
 
+    # Sum the orders on the MASTER task
     if taskid == 0:
         Qab = Qab/(2*nmax*nmax)
         eigenvalues,eigenvectors = np.linalg.eig(Qab)
@@ -318,6 +327,20 @@ def get_order_MPI(arr,nmax,taskid,comm,row_start,row_end):
         return None
 #=======================================================================
 def half_rowwise_vectorisation(aran, arr, i, nmax, extra,rand_row,accept_local,Ts):
+    """
+    Arguments:
+        aran (2d np.array) = array that contains random update data;
+        arr (2d np.array) = array that contains lattice data;
+        nmax (int) = side length of square lattice.
+        extra (int) = 0 or 1 if there is an extra column to account for
+        rand_row (2d np.array) = array that contains random numbers for boltzmann updates;
+        accept_local (int) = int that contains local accept sums
+        Ts (float) = reduced energy
+    Description:
+        This is the same function as the numpy implementation. first evaluting even columns in a row,
+        then odd, then the extra one if necessary. Now however, the rows are selected and calculated by seperate
+        MPI tasks in MC_step.
+    """
     for even_odd in [0,1]:  # Repeat the same process as before, but in half row steps, making use of numpy functions for speedup.
         ang = aran[i]
 
@@ -335,6 +358,7 @@ def half_rowwise_vectorisation(aran, arr, i, nmax, extra,rand_row,accept_local,T
         else:
             random_row = rand_row[i][::2][:-1]
 
+        # Calculate which updates should be rejected using a mask.
         mask_1 = (en1_row_half <= en0_row_half)
         mask_2 = (boltz_row >= random_row)
         accept_local += np.sum(np.logical_or(mask_1, mask_2))
@@ -350,9 +374,11 @@ def half_rowwise_vectorisation(aran, arr, i, nmax, extra,rand_row,accept_local,T
         if extra == 1:
             expanded_mask = np.append(expanded_mask, True)
 
+        # Apply change reversals
         arr[i] -= ang * expanded_mask
 
-    # Carry out a single step calculation if the array width is odd, this is required due to wraparound (2 even columns would be neighbouring)
+    # Carry out a single step calculation if the array width is odd, this is
+    # required due to wraparound (2 even columns would be neighbouring)
     if extra == 1:
         iy = nmax - 1
         single_ang = aran[i][iy]
@@ -377,9 +403,13 @@ def half_rowwise_vectorisation(aran, arr, i, nmax, extra,rand_row,accept_local,T
 def MC_step(arr,Ts,nmax,taskid,comm,row_start,row_end):
     """
     Arguments:
-	  arr (float(nmax,nmax)) = array that contains lattice data;
-	  Ts (float) = reduced temperature (range 0 to 2);
+      arr (float(nmax,nmax)) = array that contains lattice data;
+      Ts (float) = reduced temperature (range 0 to 2);
       nmax (int) = side length of square lattice.
+      taskid (int) = task id of the MPI process.
+      comm (MPI.COMM_WORLD) = MPI communicator object.
+      row_start (int) = row start index of the MPI process.
+      row_end (int) = row end index of the MPI process.
     Description:
       Function to perform one MC step, which consists of an average
       of 1 attempted change per lattice site.  Working with reduced
@@ -387,8 +417,8 @@ def MC_step(arr,Ts,nmax,taskid,comm,row_start,row_end):
       ratio for information.  This is the fraction of attempted changes
       that are successful.  Generally aim to keep this around 0.5 for
       efficient simulation.
-	Returns:
-	  accept/(nmax**2) (float) = acceptance ratio for current MCS.
+    Returns:
+      accept/(nmax**2) (float) = acceptance ratio for current MCS.
     """
     #
     # Pre-compute some random numbers.  This is faster than
@@ -408,6 +438,7 @@ def MC_step(arr,Ts,nmax,taskid,comm,row_start,row_end):
         start = row_start if row_start % 2 == 1 else row_start + 1 # We'll start with even rows, this is because even
         # row counts may have boundary conditions if the total rows are odd
         for i in range(start, row_end, 2):
+            # Using the new function below, that uses numpy vectorisation to step through even and odd columns.
             half_rowwise_vectorisation(aran, arr, i, nmax, extra, rand_row, accept_local,Ts)
 
 
@@ -454,8 +485,16 @@ def MC_step(arr,Ts,nmax,taskid,comm,row_start,row_end):
 #=======================================================================
 def split_rows(nrows, numworkers, taskid):
     """
-    Divide the rows among the workers
-    Returns (start, rend) for worker.
+    Arguments:
+        nrows (int): number of rows
+        numworkers (int): number of workers
+        taskid (int): task id of the MPI process.
+    Description:
+        Divide the rows among the workers
+        Returns (start, end) for workers.
+    Returns:
+        start (int): index of the first row
+        end (int): index of the last row
     """
     worker = taskid-1
     # Integer division and then pick up the remainder.
@@ -497,7 +536,7 @@ def main(program, nsteps, nmax, temp, pflag):
     # Define the master task
     MASTER = 0
 
-    # ************************* master code *******************************/
+    # on the MASTER task:
     if taskid == MASTER:
         # Check if numworkers is within range - quit if not
         if (numworkers > 7) or (numworkers < 1):
@@ -527,12 +566,15 @@ def main(program, nsteps, nmax, temp, pflag):
             comm.send(nmax, dest=i, tag=2)
             comm.Send(lattice, dest=i, tag=3)
 
+    # on the other tasks
     elif taskid != MASTER:
+        # get the starting values and lattice from the master task
         temp = comm.recv(source=MASTER, tag=1)
         nmax = comm.recv(source=MASTER, tag=2)
         lattice = np.empty((nmax, nmax), dtype=np.double)
         comm.Recv([lattice, MPI.DOUBLE], source=MASTER, tag=3)
 
+        # split the lattice amongst workers
         rows_start, rows_end = split_rows(nmax, numworkers, taskid)
 
     # This will be the only section run in parallel.
@@ -546,6 +588,7 @@ def main(program, nsteps, nmax, temp, pflag):
             all_energy_MPI(lattice, nmax, taskid, comm, rows_start, rows_end)
             get_order_MPI(lattice, nmax, taskid, comm, rows_start, rows_end)
 
+    # finalise timings and output on the master task
     if taskid == MASTER:
         final = MPI.Wtime()
 

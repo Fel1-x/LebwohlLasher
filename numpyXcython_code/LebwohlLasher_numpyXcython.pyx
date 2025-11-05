@@ -1,11 +1,12 @@
 """
-Basic Python Lebwohl-Lasher code.  Based on the paper 
+Vectorised and Cythonised Basic Python Lebwohl-Lasher code.  Based on the paper
 P.A. Lebwohl and G. Lasher, Phys. Rev. A, 6, 426-429 (1972).
 This version in 2D.
 
 Run at the command line by typing:
 
-python LebwohlLasher.py <ITERATIONS> <SIZE> <TEMPERATURE> <PLOTFLAG>
+CC=gcc-15 python setup_LebwohlLasher_numpyXcython.py build_ext -fi
+python run_LebwohlLasher_numpyXcython.py <ITERATIONS> <SIZE> <TEMPERATURE> <PLOTFLAG>
 
 where:
   ITERATIONS = number of Monte Carlo steps, where 1MCS is when each cell
@@ -34,6 +35,8 @@ import matplotlib as mpl
 from libc.math cimport cos
 
 #=======================================================================
+# Decorators are used throughout this script to cythonise functions
+# Disable array index bound checking, disable negative indexing.
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef double[:,::1] initdat(int nmax):
@@ -47,6 +50,8 @@ cdef double[:,::1] initdat(int nmax):
 	Returns:
 	  arr (float(nmax,nmax)) = array to hold lattice.
     """
+    # Use of memory views instead of numpy arrays for C compilation
+    # All further cythonised code will include C type variable definitions.
     cdef double[:,::1] arr = np.zeros((nmax,nmax),dtype=np.double)
     arr = np.random.random_sample((nmax,nmax))*2.0*np.pi
     return arr
@@ -139,23 +144,26 @@ def savedat(arr,nsteps,Ts,runtime,ratio,energy,order,nmax):
 cdef one_energy(double[:,::1] arr_c, int i, int nmax, int odd_even_flag=3, int extra=0):
     """
     Arguments:
-	  arr (double(nmax,nmax)) = array that contains lattice data;
-	  ix (int) = x lattice coordinate of cell;
-	  iy (int) = y lattice coordinate of cell;
-      nmax (int) = side length of square lattice.
+      arr (double[:,::1] memory view) = array that contains lattice data;
+      i (int) = x lattice coordinate row;
+      nmax (int) = side length of square lattice;
+      odd_even_flag (int) = flag of odd vs even columns (1/0);
+      extra (int) = whether nmax is odd;
     Description:
-      Function that computes the energy of a single cell of the
-      lattice taking into account periodic boundaries.  Working with
-      reduced energy (U/epsilon), equivalent to setting epsilon=1 in
-      equation (1) in the project notes.
-	Returns:
-	  en (double) = reduced energy of cell.
+      Function that computes the energy of a row of cells in the lattice
+      and outputs only every other cell such that they can influence
+      neighouring cells. Working with reduced energy (U/epsilon),
+      equivalent to setting epsilon=1 in equation (1) in the project notes.
+    Returns:
+      en (np.array) = reduced energy of a half row of cells.
     """
 
     cdef double[::1] en = np.zeros(nmax//2)
 
+    # cast to a numpy array
     arr = np.asarray(arr_c, dtype=np.double)
 
+    # Define arrays to the "left/right/up/down" of the target row position.
     arr_right = np.roll(arr[i], -1)
     arr_left = np.roll(arr[i], 1)
     arr_up = np.roll(arr, 1, axis=0)[i]
@@ -165,6 +173,7 @@ cdef one_energy(double[:,::1] arr_c, int i, int nmax, int odd_even_flag=3, int e
 # Add together the 4 neighbour contributions
 # to the energy
 #
+
     target_row = arr[i]
     ang_right = target_row-arr_right
     ang_left = target_row-arr_left
@@ -176,6 +185,7 @@ cdef one_energy(double[:,::1] arr_c, int i, int nmax, int odd_even_flag=3, int e
     en += 0.5*(1.0 - 3.0*np.cos(ang_up)**2)
     en += 0.5*(1.0 - 3.0*np.cos(ang_down)**2)
 
+    # return the half arrays for even cells or odd cells or odd cells-1 if nmax is odd
     if odd_even_flag == 3:
         return en
     if extra == 1 and odd_even_flag == 0:
@@ -202,6 +212,7 @@ cdef double one_energy_single(double[:,::1] arr, int ix, int iy, int nmax):
 	Returns:
 	  en (double) = reduced energy of cell.
     """
+    # Define all variables as C variables, declaring types.
     cdef:
         double en = 0.0
         int ixp = (ix+1)%nmax # These are the coordinates
@@ -330,6 +341,8 @@ def MC_step(double[:,::1] arr_c, float Ts, int nmax):
     en1_row_half = np.zeros(nmax//2)
     en0_row_half = np.zeros(nmax // 2)
 
+    # Each odd column will be calculated first, then even columns, this ensures the updates affect the result of those yet to be sampled.
+    # Further, boundary conditions may let 2 even columns be next to each other with wraparound, so that is accounted for.
     extra = 0
     if nmax % 2 == 1:
         extra = 1 # Identify if the amount of rows is divisible by 2, if not, an extra column must be calculated at the end, due to boundary conditions
@@ -354,12 +367,14 @@ def MC_step(double[:,::1] arr_c, float Ts, int nmax):
             else:
                 random_row = rand_row[i][::2][:-1]
 
+            # Calculate which updates should be rejected using a mask.
             mask_1 = (en1_row_half <= en0_row_half)
             mask_2 = (boltz_row >= random_row)
             accept += np.sum(np.logical_or(mask_1,mask_2))
             rejections_mask = ~(mask_1 | mask_2)
 
-            # Expand the mask back out to account for the whole arr, but reverse the ang addition for each unchanged column (and extra row)
+            # Expand the mask back out to account for the whole arr,
+            # and reverse the ang addition for each unchanged column (and extra row)
             expanded_mask = np.ones(rejections_mask.size * 2, dtype=bool)
             if even_odd == 0:
                 expanded_mask[::2] = rejections_mask
@@ -369,8 +384,10 @@ def MC_step(double[:,::1] arr_c, float Ts, int nmax):
             if extra == 1:
                 expanded_mask = np.append(expanded_mask, True)
 
+            # Apply change reversals
             arr[i] -= ang * expanded_mask
 
+    # Carry out a single step calculation if the array width is odd, this is required due to wraparound (2 even columns would be neighbouring)
     if extra == 1:
         iy = nmax - 1
         single_ang = aran[i][iy]

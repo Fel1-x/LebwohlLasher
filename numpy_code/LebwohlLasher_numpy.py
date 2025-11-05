@@ -1,5 +1,5 @@
 """
-Basic Python Lebwohl-Lasher code.  Based on the paper 
+Vectorised Python Lebwohl-Lasher code.  Based on the paper
 P.A. Lebwohl and G. Lasher, Phys. Rev. A, 6, 426-429 (1972).
 This version in 2D.
 
@@ -131,18 +131,20 @@ def one_energy(arr,i,nmax,odd_even_flag=3,extra=0):
     """
     Arguments:
 	  arr (float(nmax,nmax)) = array that contains lattice data;
-	  ix (int) = x lattice coordinate of cell;
-	  iy (int) = y lattice coordinate of cell;
-      nmax (int) = side length of square lattice.
+	  i (int) = x lattice coordinate row;
+      nmax (int) = side length of square lattice;
+      odd_even_flag (int) = flag of odd vs even columns (1/0);
+      extra (int) = whether nmax is odd;
     Description:
-      Function that computes the energy of a single cell of the
-      lattice taking into account periodic boundaries.  Working with
-      reduced energy (U/epsilon), equivalent to setting epsilon=1 in
-      equation (1) in the project notes.
+      Function that computes the energy of a row of cells in the lattice
+      and outputs only every other cell such that they can influence
+      neighouring cells. Working with reduced energy (U/epsilon),
+      equivalent to setting epsilon=1 in equation (1) in the project notes.
 	Returns:
-	  en (float) = reduced energy of cell.
+	  en (np.array) = reduced energy of a half row of cells.
     """
 
+    # Define arrays to the "left/right/up/down" of the target row position.
     arr_right = np.roll(arr[i], -1)
     arr_left = np.roll(arr[i], 1)
     arr_up = np.roll(arr, 1, axis=0)[i]
@@ -163,6 +165,7 @@ def one_energy(arr,i,nmax,odd_even_flag=3,extra=0):
     en += 0.5*(1.0 - 3.0*np.cos(ang_up)**2)
     en += 0.5*(1.0 - 3.0*np.cos(ang_down)**2)
 
+    # return the half arrays for even cells or odd cells or odd cells-1 if nmax is odd
     if odd_even_flag == 3:
         return en
     elif odd_even_flag == 0:
@@ -220,6 +223,7 @@ def all_energy(arr,nmax):
     enall_row = np.zeros(nmax)
     for i in range(nmax):
         enall_row += one_energy(arr,i,nmax)
+    # Vectorised with numpy
     enall = np.sum(enall_row)
     return enall
 #=======================================================================
@@ -277,6 +281,7 @@ def MC_step(arr,Ts,nmax):
     aran = np.random.normal(scale=scale, size=(nmax,nmax))
     rand_row = np.random.uniform(0.0, 1.0, size=(nmax,nmax))
 
+    # randomly order row selections.
     row_order = np.random.permutation(nmax)
     # Each odd column will be calculated first, then even columns, this ensures the updates affect the result of those yet to be sampled.
     # Further, boundary conditions may let 2 even columns be next to each other with wraparound, so that is accounted for.
@@ -301,12 +306,14 @@ def MC_step(arr,Ts,nmax):
             else:
                 random_row = rand_row[i][::2][:-1]
 
+            # Calculate which updates should be rejected using a mask.
             mask_1 = (en1_row_half <= en0_row_half)
             mask_2 = (boltz_row >= random_row)
             accept += np.sum(np.logical_or(mask_1,mask_2))
             rejections_mask = ~(mask_1 | mask_2)
 
-            # Expand the mask back out to account for the whole arr, but reverse the ang addition for each unchanged column (and extra row)
+            # Expand the mask back out to account for the whole arr,
+            # and reverse the ang addition for each unchanged column (and extra row)
             expanded_mask = np.ones(rejections_mask.size * 2, dtype=bool)
             if even_odd == 0:
                 expanded_mask[1::2] = rejections_mask
@@ -315,7 +322,7 @@ def MC_step(arr,Ts,nmax):
             if extra == 1:
                 expanded_mask = np.append(expanded_mask, True)
 
-
+            # Apply change reversals
             arr[i] -= ang * expanded_mask
 
         # Carry out a single step calculation if the array width is odd, this is required due to wraparound (2 even columns would be neighbouring)
@@ -328,8 +335,6 @@ def MC_step(arr,Ts,nmax):
             if en1<=en0:
                 accept += 1
             else:
-            # Now apply the Monte Carlo test - compare
-            # exp( -(E_new - E_old) / T* ) >= rand(0,1)
                 boltz = np.exp( -(en1 - en0) / Ts )
 
                 if boltz >= np.random.uniform(0.0,1.0):

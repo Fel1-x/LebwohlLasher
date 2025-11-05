@@ -1,11 +1,12 @@
 """
-Basic Python Lebwohl-Lasher code.  Based on the paper 
+Cythonised Python Lebwohl-Lasher code.  Based on the paper
 P.A. Lebwohl and G. Lasher, Phys. Rev. A, 6, 426-429 (1972).
 This version in 2D.
 
-Run at the command line by typing:
+Run at the command line with cython:
 
-python LebwohlLasher.py <ITERATIONS> <SIZE> <TEMPERATURE> <PLOTFLAG>
+CC=gcc-15 python setup_LebwohlLasher_cython.py build_ext -fi
+python run_LebwohlLasher_cython.py <ITERATIONS> <SIZE> <TEMPERATURE> <PLOTFLAG>
 
 where:
   ITERATIONS = number of Monte Carlo steps, where 1MCS is when each cell
@@ -22,6 +23,7 @@ domains alternate between old data and new data.
 SH 16-Oct-23
 """
 
+# Import cython and cythonised np
 cimport cython
 import sys
 import time
@@ -34,6 +36,8 @@ import matplotlib as mpl
 from libc.math cimport cos
 
 #=======================================================================
+# Decorators are used throughout this script to cythonise functions
+# Disable array index bound checking, disable negative indexing.
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef double[:,::1] initdat(int nmax):
@@ -47,6 +51,8 @@ cdef double[:,::1] initdat(int nmax):
 	Returns:
 	  arr (float(nmax,nmax)) = array to hold lattice.
     """
+
+    # Use of memory views instead of numpy arrays for C compilation
     cdef double[:,::1] arr = np.zeros((nmax,nmax),dtype=np.double)
     arr = np.random.random_sample((nmax,nmax))*2.0*np.pi
     return arr
@@ -135,6 +141,7 @@ def savedat(arr,nsteps,Ts,runtime,ratio,energy,order,nmax):
         print("   {:05d}    {:6.4f} {:12.4f}  {:6.4f} ".format(i,ratio[i],energy[i],order[i]),file=FileOut)
     FileOut.close()
 #=======================================================================
+# Decorators as before.
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef double one_energy(double[:,::1] arr, int ix, int iy, int nmax):
@@ -152,6 +159,8 @@ cdef double one_energy(double[:,::1] arr, int ix, int iy, int nmax):
 	Returns:
 	  en (double) = reduced energy of cell.
     """
+
+    # Define all variables as C variables, declaring types.
     cdef:
         double en = 0.0
         int ixp = (ix+1)%nmax # These are the coordinates
@@ -180,6 +189,7 @@ cdef double one_energy(double[:,::1] arr, int ix, int iy, int nmax):
 
     return en
 #=======================================================================
+# As above
 @cython.boundscheck(False)
 @cython.wraparound(False)
 def all_energy(double[:,::1] arr, int nmax):
@@ -193,6 +203,8 @@ def all_energy(double[:,::1] arr, int nmax):
 	Returns:
 	  enall (float) = reduced energy of lattice.
     """
+
+    # C type declarations.
     cdef:
         int i, j
         double enall
@@ -202,6 +214,7 @@ def all_energy(double[:,::1] arr, int nmax):
             enall += one_energy(arr,i,j,nmax)
     return enall
 #=======================================================================
+# As above
 @cython.boundscheck(False)
 @cython.wraparound(False)
 def get_order(double[:,::1] arr, int nmax):
@@ -217,6 +230,8 @@ def get_order(double[:,::1] arr, int nmax):
 	  max(eigenvalues(Qab)) (float) = order parameter for lattice.
     """
     Qab = np.zeros((3,3))
+
+    # C type declarations.
     cdef double[:,::1] delta = np.eye(3,3)
     #
     # Generate a 3D unit vector for each cell (i,j) and
@@ -236,7 +251,7 @@ def get_order(double[:,::1] arr, int nmax):
     eigenvalues,eigenvectors = np.linalg.eig(Qab)
     return eigenvalues.max()
 #=======================================================================
-
+# As above
 @cython.boundscheck(False)
 @cython.wraparound(False)
 def MC_step(double[:,::1] arr, float Ts, int nmax):
@@ -255,11 +270,7 @@ def MC_step(double[:,::1] arr, float Ts, int nmax):
 	Returns:
 	  accept/(nmax**2) (float) = acceptance ratio for current MCS.
     """
-    #
-    # Pre-compute some random numbers.  This is faster than
-    # using lots of individual calls.  "scale" sets the width
-    # of the distribution for the angle changes - increases
-    # with temperature.
+    # Declare C type variables
     cdef:
         double scale = 0.1+Ts
         int accept = 0
@@ -267,6 +278,10 @@ def MC_step(double[:,::1] arr, float Ts, int nmax):
         int ix, iy
         double ang, en0, en1, boltz
 
+    # Pre-compute some random numbers.  This is faster than
+    # using lots of individual calls.  "scale" sets the width
+    # of the distribution for the angle changes - increases
+    # with temperature.
     cdef int[:,::1] xran = np.random.randint(0,high=nmax, size=(nmax,nmax), dtype=np.int32)
     cdef int[:,::1] yran = np.random.randint(0,high=nmax, size=(nmax,nmax), dtype=np.int32)
     cdef double[:,::1] aran = np.random.normal(scale=scale, size=(nmax,nmax))
@@ -274,6 +289,7 @@ def MC_step(double[:,::1] arr, float Ts, int nmax):
     # Pre-compute random numbers, before loop.
     cdef double[:,::1] random_num_array = np.random.uniform(0.0, 1.0, size=(nmax, nmax))
 
+    # Loop through randomly selected cells on avg once, performing the establish Lebwohl Lasher algorithm.
     for i in range(nmax):
         for j in range(nmax):
             ix = xran[i,j]

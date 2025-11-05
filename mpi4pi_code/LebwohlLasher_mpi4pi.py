@@ -1,13 +1,14 @@
 """
-Basic Python Lebwohl-Lasher code.  Based on the paper 
+Mpi4Py Python Lebwohl-Lasher code.  Based on the paper
 P.A. Lebwohl and G. Lasher, Phys. Rev. A, 6, 426-429 (1972).
 This version in 2D.
 
-Run at the command line by typing:
+Run at the command line with openmpi by typing:
 
-python LebwohlLasher.py <ITERATIONS> <SIZE> <TEMPERATURE> <PLOTFLAG>
+mpiexec -n <TASK_COUNT> python LebwohlLasher_mpi4py.py <ITERATIONS> <SIZE> <TEMPERATURE> <PLOTFLAG>
 
 where:
+  TASK_COUNT = total number of tasks to be used, must be 2 or greater.
   ITERATIONS = number of Monte Carlo steps, where 1MCS is when each cell
       has attempted a change once on average (i.e. SIZE*SIZE attempts)
   SIZE = side length of square lattice
@@ -192,19 +193,27 @@ def all_energy_MPI(arr,nmax,taskid,comm,row_start,row_end):
     Arguments:
 	  arr (float(nmax,nmax)) = array that contains lattice data;
       nmax (int) = side length of square lattice.
+      taskid (int) = task id of the MPI process.
+      comm (MPI.COMM_WORLD) = MPI communicator object.
+      row_start (int) = row start index of the MPI process.
+      row_end (int) = row end index of the MPI process.
     Description:
       Function to compute the energy of the entire lattice. Output
       is in reduced units (U/epsilon).
 	Returns:
-	  enall (float) = reduced energy of lattice.
+	  enall_global (float) = reduced energy of lattice.
     """
+
+    # Compute individual enall for each task
     enall = 0.0
     if taskid > 0:
         for i in range(row_start, row_end):
             for j in range(nmax):
                 enall += one_energy(arr,i,j,nmax)
+    # Sum the individual enalls on the MASTER task
     enall_global = comm.reduce(enall, op=MPI.SUM, root=0)
 
+    # Only return enall_global if on the MASTER task.
     if taskid == 0:
         return enall_global
     else:
@@ -243,6 +252,10 @@ def get_order_MPI(arr,nmax,taskid,comm,row_start,row_end):
     Arguments:
 	  arr (float(nmax,nmax)) = array that contains lattice data;
       nmax (int) = side length of square lattice.
+      taskid (int) = task id of the MPI process.
+      comm (MPI.COMM_WORLD) = MPI communicator object.
+      row_start (int) = row start index of the MPI process.
+      row_end (int) = row end index of the MPI process.
     Description:
       Function to calculate the order parameter of a lattice
       using the Q tensor approach, as in equation (3) of the
@@ -258,6 +271,7 @@ def get_order_MPI(arr,nmax,taskid,comm,row_start,row_end):
     #
     lab = np.vstack((np.cos(arr),np.sin(arr),np.zeros_like(arr))).reshape(3,nmax,nmax)
 
+    # Calculate the order for individual MPI tasks
     if taskid > 0:
         for a in range(3):
             for b in range(3):
@@ -267,6 +281,7 @@ def get_order_MPI(arr,nmax,taskid,comm,row_start,row_end):
 
     Qab = comm.reduce(Qab_local, op=MPI.SUM, root=0)
 
+    # Sum the orders on the MASTER task
     if taskid == 0:
         Qab = Qab/(2*nmax*nmax)
         eigenvalues,eigenvectors = np.linalg.eig(Qab)
@@ -280,6 +295,10 @@ def MC_step(arr,Ts,nmax,taskid,comm,row_start,row_end):
 	  arr (float(nmax,nmax)) = array that contains lattice data;
 	  Ts (float) = reduced temperature (range 0 to 2);
       nmax (int) = side length of square lattice.
+      taskid (int) = task id of the MPI process.
+      comm (MPI.COMM_WORLD) = MPI communicator object.
+      row_start (int) = row start index of the MPI process.
+      row_end (int) = row end index of the MPI process.
     Description:
       Function to perform one MC step, which consists of an average
       of 1 attempted change per lattice site.  Working with reduced
@@ -298,18 +317,24 @@ def MC_step(arr,Ts,nmax,taskid,comm,row_start,row_end):
     scale=0.1+Ts
     accept_local = 0
 
+    # set the seed so they are different for each MPI task
     rng = default_rng(seed=taskid)
 
     if taskid != 0:
-        # Define which rows are even, this will be used to determine the pool of random points
-        # That can be chosen from.
+        # Define which rows are even, and within the rows assigned to the MPI task,
+        # this will be used to determine the pool of random points that can be chosen from.
         even_rows = np.arange(row_start, row_end)[np.arange(row_start, row_end) % 2 == 0]
+
+        # How many points does each task want to select
         num_samples = len(even_rows) * nmax
 
+        # Generate random numbers based on which rows are available (above)
         xran = np.random.choice(even_rows, size=num_samples)
         yran = np.random.randint(0, nmax, size=num_samples)
         aran = np.random.normal(scale=scale, size=num_samples)
 
+        # This loop selects points from the random tables above, and conducts the energy calculation
+        # and boltzmann check, changing the point according to "ang" if it satisfies either condition.
         for point in range(num_samples):
             ix = xran[point]
             iy = yran[point]
@@ -329,14 +354,14 @@ def MC_step(arr,Ts,nmax,taskid,comm,row_start,row_end):
                 else:
                     arr[ix,iy] -= ang
 
-    # Now we have to synchronise all the arr for future steps.
+    # Now we have to synchronise the lattice for future steps on the MASTER node then bcast back out
     local_rows = arr[row_start:row_end].copy()
     gathered = comm.gather(local_rows, root=0) # List of rows
     if taskid == 0:
         arr[:,:] = np.vstack(gathered)
     comm.Bcast(arr, root=0)
 
-    # Now again for odd rows, excluding the last row if nmax is odd
+    # Now the same again for odd rows, EXCLUDING THE LAST ROW if nmax is odd to account for wraparound
     if taskid != 0:
         odd_rows = np.arange(row_start, row_end)[np.arange(row_start, row_end) % 2 == 1]
         if nmax % 2 == 1:
@@ -367,15 +392,15 @@ def MC_step(arr,Ts,nmax,taskid,comm,row_start,row_end):
                 else:
                     arr[ix,iy] -= ang
 
-    # Now we have to synchronise all the arr for future steps.
+    # Synchronise again
     local_rows = arr[row_start:row_end].copy()
     gathered = comm.gather(local_rows, root=0) # List of rows
     if taskid == 0:
         arr[:,:] = np.vstack(gathered)
     comm.Bcast(arr, root=0)
 
+    # Sample from just that last row in a similar way
     if nmax % 2 != 0 and row_end == nmax:
-        # Change just that last row
         yran = np.random.randint(0, nmax, size=nmax)
         aran = np.random.normal(scale=scale, size=nmax)
 
@@ -398,13 +423,14 @@ def MC_step(arr,Ts,nmax,taskid,comm,row_start,row_end):
                 else:
                     arr[ix,iy] -= ang
 
-    # Now we have to synchronise all the arr for future steps.
+    # A final synchronisation
     local_rows = arr[row_start:row_end].copy()
     gathered = comm.gather(local_rows, root=0) # List of rows
     if taskid == 0:
         arr[:,:] = np.vstack(gathered)
     comm.Bcast(arr, root=0)
 
+    # Gather all local accept totals into one global total on MASTER node
     accept_global = comm.reduce(accept_local, op=MPI.SUM, root=0)
     if taskid == 0:
         return accept_global / (nmax * nmax)
@@ -413,8 +439,16 @@ def MC_step(arr,Ts,nmax,taskid,comm,row_start,row_end):
 #=======================================================================
 def split_rows(nrows, numworkers, taskid):
     """
-    Divide the rows among the workers
-    Returns (start, end) for workers.
+    Arguments:
+        nrows (int): number of rows
+        numworkers (int): number of workers
+        taskid (int): task id of the MPI process.
+    Description:
+        Divide the rows among the workers
+        Returns (start, end) for workers.
+    Returns:
+        start (int): index of the first row
+        end (int): index of the last row
     """
     worker = taskid-1
     # Integer division and then pick up the remainder.
@@ -456,11 +490,11 @@ def main(program, nsteps, nmax, temp, pflag):
     # Define the master task
     MASTER = 0
 
-    # ************************* master code *******************************/
+    # on the MASTER task:
     if taskid == MASTER:
         # Check if numworkers is within range - quit if not
-        if (numworkers > 7) or (numworkers < 1):
-            print("ERROR: the number of workers must be between %d and %d." % (1, 7))
+        if numworkers < 1:
+            print("ERROR: the number of workers must be greater than 1.")
             comm.Abort()
 
         # Create and initialise lattice
@@ -486,12 +520,15 @@ def main(program, nsteps, nmax, temp, pflag):
             comm.send(nmax, dest=i, tag=2)
             comm.Send(lattice, dest=i, tag=3)
 
+    # on the other tasks
     elif taskid != MASTER:
+        # get the starting values and lattice from the master task
         temp = comm.recv(source=MASTER, tag=1)
         nmax = comm.recv(source=MASTER, tag=2)
         lattice = np.empty((nmax, nmax), dtype=np.double)
         comm.Recv([lattice, MPI.DOUBLE], source=MASTER, tag=3)
 
+        # split the lattice amongst workers
         rows_start, rows_end = split_rows(nmax, numworkers, taskid)
 
     # This will be the only section run in parallel.
@@ -505,6 +542,7 @@ def main(program, nsteps, nmax, temp, pflag):
             all_energy_MPI(lattice, nmax, taskid, comm, rows_start, rows_end)
             get_order_MPI(lattice, nmax, taskid, comm, rows_start, rows_end)
 
+    # finalise timings and output on the master task
     if taskid == MASTER:
         final = MPI.Wtime()
 
